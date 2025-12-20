@@ -42,7 +42,7 @@ jobs:
 
           mkdir -p out/win3
 
-          for wav in aeueo-8k.wav aeueo-16k.wav s-8k.wav s-16k.wav; do
+          for wav in aeueo-8kHz.wav aeueo-16kHz.wav s-8kHz.wav s-16kHz.wav; do
             if [ ! -f "$wav" ]; then
               echo "ERROR: missing wav file: $wav"
               exit 1
