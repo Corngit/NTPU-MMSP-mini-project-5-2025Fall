@@ -30,8 +30,7 @@ ax[0].set_ylabel('Amplitude')
 
 ## change to dB scale and plot spectrogram
 eps = 1e-10
-S = data.T      ## here, we assume data is in shape (time_frames, freq_bins) be careful
-S_db = 20 * np.log10(np.abs(S) + eps)
+S_db = data.T      
 
 vmax = np.max(S_db)
 vmin = vmax - 60  
