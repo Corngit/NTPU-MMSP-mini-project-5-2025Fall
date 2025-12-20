@@ -212,7 +212,7 @@ int main(int argc, char** argv){
         for(int n = 0; n < N; n++){
             double x = 0.0;
             if(n < P && s + n < wav.num_samples)
-                x = wav.pcm[s + n] * window[n];
+                x = (wav.pcm[s + n] /32768.0) * window[n];
             buf[n].re = x;
             buf[n].im = 0.0;
         }
