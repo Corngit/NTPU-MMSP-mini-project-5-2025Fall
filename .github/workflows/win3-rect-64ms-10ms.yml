@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
 
-          for wav in aeueo-8k.wav aeueo-16k.wav s-8k.wav s-16k.wav; do
+          for wav in aeueo-8kHz.wav aeueo-16kHz.wav s-8kHz.wav s-16kHz.wav; do
             base="$(basename "$wav" .wav)"
             txt="out/win3/${base}_win3_rectangular_w64ms_dft64ms_f10ms.txt"
             pdf="out/win3/${base}_win3_rectangular_w64ms_dft64ms_f10ms.pdf"
