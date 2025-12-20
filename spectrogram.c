@@ -13,7 +13,7 @@ typedef struct {
     double re, im;
 } cpx;
 
-//FFT計算工具
+//FFT complex arithmetic
 static cpx c_add(cpx a, cpx b){
     cpx r = { a.re + b.re, a.im + b.im };
     return r;
@@ -95,9 +95,9 @@ static uint16_t read_u16_le(FILE *fp){
 typedef struct {
     int sample_rate;      
     int num_channels;     
-    int bits_per_sample;  //每個sample位元數
-    int num_samples;      //每個聲道的sample數
-    int16_t *pcm;         //單聲道PCM資料
+    int bits_per_sample;  //bits per sample
+    int num_samples;      //sample count per channel 
+    int16_t *pcm;         //PCM data (interleaved for multi-channel)
 } wav_t;
 
 
