@@ -230,7 +230,7 @@ int main(int argc, char** argv){
     fclose(fo);
     free(window);
     free(buf);
-    free_wav(&wav);
+    free(wav.pcm);
     return 0;
 
 }
