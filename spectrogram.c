@@ -234,6 +234,8 @@ int main(int argc, char** argv){
         double db = 20.0 * log10(mag + eps);
         fprintf(fo, "%.15f ", db);
    }
+    fprintf(fo, "\n");
+}
 
 
     fclose(fo);
@@ -242,5 +244,4 @@ int main(int argc, char** argv){
     free(wav.pcm);
     return 0;
 
-}
 }
