@@ -97,9 +97,13 @@ typedef struct {
     int num_channels;     
     int bits_per_sample;  //每個sample位元數
     int num_samples;      //每個聲道的sample數
-    int16_t *pcm;         //單聲道PCM資料
+    int16_t *pcm;         //PCM samples (mono: only channel 0 is stored)
 } wav_t;
 
+static void free_wav(wav_t *w){
+    if(w && w->pcm) free(w->pcm);
+    if(w) memset(w, 0, sizeof(*w));
+}
 
 //Read PCM 16-bit mono WAV
 static int load_wav_pcm16_mono(const char *path, wav_t *out){
@@ -107,53 +111,74 @@ static int load_wav_pcm16_mono(const char *path, wav_t *out){
     FILE *fp = fopen(path, "rb");
     if(!fp) return 0;
 
-    char id[4];
-    fread(id, 1, 4, fp);              //RIFF
-    read_u32_le(fp);
-    fread(id, 1, 4, fp);              //WAVE
+    char riff[4], wave[4];
+    if(fread(riff, 1, 4, fp) != 4 || memcmp(riff, "RIFF", 4) != 0){ fclose(fp); return 0; }
+    (void)read_u32_le(fp);
+    if(fread(wave, 1, 4, fp) != 4 || memcmp(wave, "WAVE", 4) != 0){ fclose(fp); return 0; }
 
+    int fmt_found = 0, data_found = 0;
     uint16_t audio_format = 0;
     uint32_t data_size = 0;
     long data_pos = 0;
 
-    /*Parsing WAV chunk*/
-    while(!feof(fp)){
-        fread(id, 1, 4, fp);
+    while(!fmt_found || !data_found){
+        char id[4];
+        if(fread(id, 1, 4, fp) != 4) break;
         uint32_t size = read_u32_le(fp);
 
         if(memcmp(id, "fmt ", 4) == 0){
+            if(size < 16){ fclose(fp); return 0; }
             audio_format = read_u16_le(fp);
             out->num_channels = read_u16_le(fp);
             out->sample_rate = read_u32_le(fp);
-            read_u32_le(fp);
-            read_u16_le(fp);
+            (void)read_u32_le(fp);
+            (void)read_u16_le(fp);
             out->bits_per_sample = read_u16_le(fp);
-            fseek(fp, size - 16, SEEK_CUR);
-        }
-        else if(memcmp(id, "data", 4) == 0){
+
+            uint32_t remain = size - 16;
+            if(remain > 0) fseek(fp, (long)remain, SEEK_CUR);
+
+            fmt_found = 1;
+        }else if(memcmp(id, "data", 4) == 0){
             data_pos = ftell(fp);
             data_size = size;
-            fseek(fp, size, SEEK_CUR);
+            fseek(fp, (long)size, SEEK_CUR);
+            data_found = 1;
+        }else{
+            fseek(fp, (long)size, SEEK_CUR);
         }
-        else{
-            fseek(fp, size, SEEK_CUR);
-        }
-    }
-    if(audio_format != 1 || out->bits_per_sample != 16){
-        fclose(fp);
-        return 0;
-    }
-    /*Read PCM data*/
-    fseek(fp, data_pos, SEEK_SET);
-    int total_samples = data_size / 2 / out->num_channels;
-    out->num_samples = total_samples;
-    out->pcm = (int16_t*)malloc(sizeof(int16_t) * total_samples);
 
-    for(int i = 0; i < total_samples; i++){
-        fread(&out->pcm[i], sizeof(int16_t), 1, fp);
-        for(int ch = 1; ch < out->num_channels; ch++)
-            fseek(fp, sizeof(int16_t), SEEK_CUR);
+        if(size & 1) fseek(fp, 1, SEEK_CUR); // padding
     }
+
+    if(!fmt_found || !data_found){ fclose(fp); return 0; }
+    if(audio_format != 1 || out->bits_per_sample != 16){ fclose(fp); return 0; }
+    if(out->num_channels < 1){ fclose(fp); return 0; }
+
+    fseek(fp, data_pos, SEEK_SET);
+
+    int bytes_per_sample = out->bits_per_sample / 8;
+    int total_frames = (int)(data_size / (bytes_per_sample * out->num_channels));
+
+    out->num_samples = total_frames;
+    out->pcm = (int16_t*)malloc(sizeof(int16_t) * (size_t)total_frames);
+    if(!out->pcm){ fclose(fp); return 0; }
+
+    for(int i = 0; i < total_frames; i++){
+        int16_t s0;
+        if(fread(&s0, sizeof(int16_t), 1, fp) != 1){
+            free(out->pcm); fclose(fp); return 0;
+        }
+        out->pcm[i] = s0;
+
+        for(int ch = 1; ch < out->num_channels; ch++){
+            int16_t tmp;
+            if(fread(&tmp, sizeof(int16_t), 1, fp) != 1){
+                free(out->pcm); fclose(fp); return 0;
+            }
+        }
+    }
+
     fclose(fp);
     return 1;
 }
@@ -170,8 +195,17 @@ static void build_window(double *w, int P, const char *type){
         for(int n = 0; n < P; n++) w[n] = 1.0;
     }
     else if(strcmp(type, "hamming") == 0){
-        for(int n = 0; n < P; n++)
-            w[n] = 0.54 - 0.46 * cos(2.0 * M_PI * n / (P - 1));
+        //Avoid division by zero when P <= 1
+        if(P <= 1){
+            for(int n = 0; n < P; n++) w[n] = 1.0;
+        }else{
+            for(int n = 0; n < P; n++)
+                w[n] = 0.54 - 0.46 * cos(2.0 * M_PI * n / (P - 1));
+        }
+    }
+    else{
+        //Default: rectangular
+        for(int n = 0; n < P; n++) w[n] = 1.0;
     }
 }
 
@@ -204,15 +238,29 @@ int main(int argc, char** argv){
     }
     double *window = (double*)malloc(sizeof(double) * P);
     cpx *buf = (cpx*)malloc(sizeof(cpx) * N);
+    if(!window || !buf){
+        printf("Out of memory\n");
+        free(window);
+        free(buf);
+        free_wav(&wav);
+        return 1;
+    }
     build_window(window, P, w_type);
 
     FILE *fo = fopen(argv[6], "w");
+    if(!fo){
+        printf("Cannot open output file\n");
+        free(window);
+        free(buf);
+        free_wav(&wav);
+        return 1;
+    }
 
     for(int s = 0; s < wav.num_samples; s += M){
         for(int n = 0; n < N; n++){
             double x = 0.0;
             if(n < P && s + n < wav.num_samples)
-                x = wav.pcm[s + n] * window[n];
+                x = (wav.pcm[s + n] / 32768.0) * window[n];
             buf[n].re = x;
             buf[n].im = 0.0;
         }
