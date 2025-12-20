@@ -95,8 +95,8 @@ static uint16_t read_u16_le(FILE *fp){
 typedef struct {
     int sample_rate;      
     int num_channels;     
-    int bits_per_sample;  //每個sample位元數
-    int num_samples;      //每個聲道的sample數
+    int bits_per_sample;  //bits per sample
+    int num_samples;      //sample count per channel
     int16_t *pcm;         //PCM samples (mono: only channel 0 is stored)
 } wav_t;
 
