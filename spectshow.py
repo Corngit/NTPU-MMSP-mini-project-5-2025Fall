@@ -4,51 +4,55 @@ import matplotlib.pyplot as plt
 from scipy.io import wavfile
 
 if len(sys.argv) != 4:
-    print("Usage: python3 spectshow.py in.wav in.txt out.pdf")
+    print("Usage: python spectshow.py input.wav input.txt output.pdf")
     sys.exit(1)
 
-in_wav = sys.argv[1]
-in_txt = sys.argv[2]
-out_pdf = sys.argv[3]
+wav_path = sys.argv[1]
+txt_path = sys.argv[2]
+pdf_path = sys.argv[3]
 
-## Read wav file
-fs, x = wavfile.read(in_wav)
+
+fs, x = wavfile.read(wav_path)
 if x.ndim == 2:
-    x = x[:, 0]
+    x = x[:, 0]   # mono
+
 t = np.arange(len(x)) / fs
 
-## Read spectrogram data
-data = np.loadtxt(in_txt)
+data = np.loadtxt(txt_path)
 
-## Plot spectrogram
+if data.size == 0:
+    raise RuntimeError("Spectrogram txt is empty")
+
+
+S_db = data.T   
+
+
+vmax = np.nanpercentile(S_db, 99)
+vmin = vmax - 60
+
+
 fig, ax = plt.subplots(2, 1, figsize=(10, 6))
 
+# Waveform
 ax[0].plot(t, x)
-ax[0].set_title('Waveform')
-ax[0].set_xlabel('Time [s]')
-ax[0].set_ylabel('Amplitude')
+ax[0].set_title("Waveform")
+ax[0].set_xlabel("Time [s]")
+ax[0].set_ylabel("Amplitude")
 
-## change to dB scale and plot spectrogram
-eps = 1e-10
-S_db = data.T      
-
-vmax = np.max(S_db)
-vmin = vmax - 60  
-
-ax[1].imshow(
+# Spectrogram
+im = ax[1].imshow(
     S_db,
-    aspect='auto',
-    origin='lower',
-    cmap='gray',     
+    aspect="auto",
+    origin="lower",
     vmin=vmin,
     vmax=vmax
 )
+ax[1].set_title("Spectrogram")
+ax[1].set_xlabel("Time Frames")
+ax[1].set_ylabel("Frequency Bins")
 
-ax[1].set_title('Spectrogram')
-ax[1].set_xlabel('Time Frames')
-ax[1].set_ylabel('Frequency Bins')
+fig.colorbar(im, ax=ax[1], label="Magnitude (dB)")
 
 plt.tight_layout()
-plt.savefig(out_pdf)
-plt.close(fig)
-
+plt.savefig(pdf_path)
+plt.close()

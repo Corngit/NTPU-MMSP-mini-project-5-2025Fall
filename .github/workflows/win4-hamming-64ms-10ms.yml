@@ -82,4 +82,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: win4-hamming-64ms-10ms
-          path: out/win4/*
+          path: out/win4/*.pdf

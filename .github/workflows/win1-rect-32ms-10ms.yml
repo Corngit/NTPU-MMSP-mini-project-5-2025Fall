@@ -82,4 +82,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: win1-rect-32ms-10ms
-          path: out/win1/*
+          path: out/win1/*.pdf
