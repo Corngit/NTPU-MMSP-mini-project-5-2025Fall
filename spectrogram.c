@@ -102,60 +102,116 @@ typedef struct {
 
 
 //Read PCM 16-bit mono WAV
-static int load_wav_pcm16_mono(const char *path, wav_t *out){
-    memset(out, 0, sizeof(*out));
+static int load_wav_pcm16_mono(const char *path, wav_t *out) {
     FILE *fp = fopen(path, "rb");
-    if(!fp) return 0;
-
-    char id[4];
-    fread(id, 1, 4, fp);              //RIFF
-    read_u32_le(fp);
-    fread(id, 1, 4, fp);              //WAVE
-
-    uint16_t audio_format = 0;
-    uint32_t data_size = 0;
-    long data_pos = 0;
-
-    /*Parsing WAV chunk*/
-    while(!feof(fp)){
-        fread(id, 1, 4, fp);
-        uint32_t size = read_u32_le(fp);
-
-        if(memcmp(id, "fmt ", 4) == 0){
-            audio_format = read_u16_le(fp);
-            out->num_channels = read_u16_le(fp);
-            out->sample_rate = read_u32_le(fp);
-            read_u32_le(fp);
-            read_u16_le(fp);
-            out->bits_per_sample = read_u16_le(fp);
-            fseek(fp, size - 16, SEEK_CUR);
-        }
-        else if(memcmp(id, "data", 4) == 0){
-            data_pos = ftell(fp);
-            data_size = size;
-            fseek(fp, size, SEEK_CUR);
-        }
-        else{
-            fseek(fp, size, SEEK_CUR);
-        }
+    if (!fp) {
+        fprintf(stderr, "ERROR: cannot open wav: %s\n", path);
+        return -1;
     }
-    if(audio_format != 1 || out->bits_per_sample != 16){
+
+    // RIFF header
+    char id[5] = {0};
+    if (fread(id, 1, 4, fp) != 4 || (id[0]!='R'||id[1]!='I'||id[2]!='F'||id[3]!='F')) {
+        fprintf(stderr, "ERROR: not RIFF\n");
         fclose(fp);
-        return 0;
+        return -1;
     }
-    /*Read PCM data*/
-    fseek(fp, data_pos, SEEK_SET);
-    int total_samples = data_size / 2 / out->num_channels;
-    out->num_samples = total_samples;
-    out->pcm = (int16_t*)malloc(sizeof(int16_t) * total_samples);
+    (void)read_u32_le(fp); // chunk size
+    if (fread(id, 1, 4, fp) != 4 || (id[0]!='W'||id[1]!='A'||id[2]!='V'||id[3]!='E')) {
+        fprintf(stderr, "ERROR: not WAVE\n");
+        fclose(fp);
+        return -1;
+    }
 
-    for(int i = 0; i < total_samples; i++){
-        fread(&out->pcm[i], sizeof(int16_t), 1, fp);
-        for(int ch = 1; ch < out->num_channels; ch++)
-            fseek(fp, sizeof(int16_t), SEEK_CUR);
+    // Find "fmt " and "data"
+    uint16_t audioFormat = 0, numChannels = 0, bitsPerSample = 0;
+    uint32_t sampleRate = 0;
+    uint32_t dataSize = 0;
+    long dataPos = -1;
+
+    while (!feof(fp)) {
+        if (fread(id, 1, 4, fp) != 4) break;
+        uint32_t chunkSize = read_u32_le(fp);
+
+        if (id[0]=='f' && id[1]=='m' && id[2]=='t' && id[3]==' ') {
+            audioFormat  = read_u16_le(fp);
+            numChannels  = read_u16_le(fp);
+            sampleRate   = read_u32_le(fp);
+            (void)read_u32_le(fp); // byteRate
+            (void)read_u16_le(fp); // blockAlign
+            bitsPerSample = read_u16_le(fp);
+
+            // skip rest of fmt if any
+            uint32_t remain = (chunkSize > 16) ? (chunkSize - 16) : 0;
+            if (remain) fseek(fp, (long)remain, SEEK_CUR);
+
+        } else if (id[0]=='d' && id[1]=='a' && id[2]=='t' && id[3]=='a') {
+            dataPos = ftell(fp);
+            dataSize = chunkSize;
+            fseek(fp, (long)chunkSize, SEEK_CUR);
+
+        } else {
+            // skip unknown chunk (pad to even)
+            fseek(fp, (long)chunkSize, SEEK_CUR);
+        }
+
+        if (chunkSize & 1) fseek(fp, 1, SEEK_CUR); // padding
     }
+
+    if (audioFormat != 1) {
+        fprintf(stderr, "ERROR: only PCM supported (audioFormat=%u)\n", audioFormat);
+        fclose(fp);
+        return -1;
+    }
+    if (!(numChannels == 1 || numChannels == 2)) {
+        fprintf(stderr, "ERROR: only mono/stereo supported (channels=%u)\n", numChannels);
+        fclose(fp);
+        return -1;
+    }
+    if (bitsPerSample != 16) {
+        fprintf(stderr, "ERROR: only 16-bit supported (bits=%u)\n", bitsPerSample);
+        fclose(fp);
+        return -1;
+    }
+    if (dataPos < 0 || dataSize == 0) {
+        fprintf(stderr, "ERROR: missing data chunk\n");
+        fclose(fp);
+        return -1;
+    }
+
+    // number of mono samples after downmix
+    const int bytesPerSample = 2;
+    int totalFrames = (int)(dataSize / (numChannels * bytesPerSample)); // frames = samples per channel
+    int16_t *mono = (int16_t*)malloc((size_t)totalFrames * sizeof(int16_t));
+    if (!mono) {
+        fprintf(stderr, "ERROR: malloc failed\n");
+        fclose(fp);
+        return -1;
+    }
+
+    // read data and downmix
+    fseek(fp, dataPos, SEEK_SET);
+
+    for (int i = 0; i < totalFrames; i++) {
+        int16_t s0 = 0, s1 = 0;
+        if (fread(&s0, sizeof(int16_t), 1, fp) != 1) { free(mono); fclose(fp); return -1; }
+        if (numChannels == 2) {
+            if (fread(&s1, sizeof(int16_t), 1, fp) != 1) { free(mono); fclose(fp); return -1; }
+
+            // average with 32-bit accumulator to avoid overflow
+            int32_t sum = (int32_t)s0 + (int32_t)s1;
+            mono[i] = (int16_t)(sum / 2);
+        } else {
+            mono[i] = s0;
+        }
+    }
+
     fclose(fp);
-    return 1;
+
+    out->sample_rate = (int)sampleRate;
+    out->num_samples = totalFrames;
+    out->pcm = mono;
+    return 0;
 }
 
 //ms to sample
