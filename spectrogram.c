@@ -13,7 +13,7 @@ typedef struct {
     double re, im;
 } cpx;
 
-//FFT­pºâ¤u¨ã
+//FFT complex arithmetic
 static cpx c_add(cpx a, cpx b){
     cpx r = { a.re + b.re, a.im + b.im };
     return r;
