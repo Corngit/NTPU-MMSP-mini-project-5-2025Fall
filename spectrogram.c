@@ -106,8 +106,7 @@ static void free_wav(wav_t *w){
 }
 
 //Read PCM 16-bit mono WAV
-static int load_wav_pcm16_mono(const char *path, wav_t *out){
-    memset(out, 0, sizeof(*out));
+static int load_wav_pcm16_mono(const char *path, wav_t *out) {
     FILE *fp = fopen(path, "rb");
     if(!fp) return 0;
 
@@ -268,17 +267,28 @@ int main(int argc, char** argv){
         fft(buf, N);
     
     //Output single-sided spectrum
+    const double eps = 1e-12;
+
     for(int k = 0; k <= N / 2; k++){
-            double mag = sqrt(buf[k].re * buf[k].re + buf[k].im * buf[k].im);
-            fprintf(fo, "%.15f ", 20.0 * log10(mag + 1e-12));
-        }
-        fprintf(fo, "\n");
-    }
+        double mag = sqrt(buf[k].re * buf[k].re + buf[k].im * buf[k].im);
+
+    // normalize by FFT length
+        mag /= (double)N;
+
+    // single-sided amplitude correction (except DC and Nyquist)
+        if(k != 0 && k != N/2) mag *= 2.0;
+
+        double db = 20.0 * log10(mag + eps);
+        fprintf(fo, "%.15f ", db);
+   }
+    fprintf(fo, "\n");
+}
+
 
     fclose(fo);
     free(window);
     free(buf);
-    free_wav(&wav);
+    free(wav.pcm);
     return 0;
 
 }
