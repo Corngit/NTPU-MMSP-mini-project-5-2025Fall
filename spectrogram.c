@@ -96,122 +96,90 @@ typedef struct {
     int sample_rate;      
     int num_channels;     
     int bits_per_sample;  //bits per sample
-    int num_samples;      //sample count per channel 
-    int16_t *pcm;         //PCM data (interleaved for multi-channel)
+    int num_samples;      //sample count per channel
+    int16_t *pcm;         //PCM samples (mono: only channel 0 is stored)
 } wav_t;
 
+static void free_wav(wav_t *w){
+    if(w && w->pcm) free(w->pcm);
+    if(w) memset(w, 0, sizeof(*w));
+}
 
 //Read PCM 16-bit mono WAV
 static int load_wav_pcm16_mono(const char *path, wav_t *out) {
     FILE *fp = fopen(path, "rb");
-    if (!fp) {
-        fprintf(stderr, "ERROR: cannot open wav: %s\n", path);
-        return -1;
-    }
+    if(!fp) return 0;
 
-    // RIFF header
-    char id[5] = {0};
-    if (fread(id, 1, 4, fp) != 4 || (id[0]!='R'||id[1]!='I'||id[2]!='F'||id[3]!='F')) {
-        fprintf(stderr, "ERROR: not RIFF\n");
-        fclose(fp);
-        return -1;
-    }
-    (void)read_u32_le(fp); // chunk size
-    if (fread(id, 1, 4, fp) != 4 || (id[0]!='W'||id[1]!='A'||id[2]!='V'||id[3]!='E')) {
-        fprintf(stderr, "ERROR: not WAVE\n");
-        fclose(fp);
-        return -1;
-    }
+    char riff[4], wave[4];
+    if(fread(riff, 1, 4, fp) != 4 || memcmp(riff, "RIFF", 4) != 0){ fclose(fp); return 0; }
+    (void)read_u32_le(fp);
+    if(fread(wave, 1, 4, fp) != 4 || memcmp(wave, "WAVE", 4) != 0){ fclose(fp); return 0; }
 
-    // Find "fmt " and "data"
-    uint16_t audioFormat = 0, numChannels = 0, bitsPerSample = 0;
-    uint32_t sampleRate = 0;
-    uint32_t dataSize = 0;
-    long dataPos = -1;
+    int fmt_found = 0, data_found = 0;
+    uint16_t audio_format = 0;
+    uint32_t data_size = 0;
+    long data_pos = 0;
 
-    while (!feof(fp)) {
-        if (fread(id, 1, 4, fp) != 4) break;
-        uint32_t chunkSize = read_u32_le(fp);
+    while(!fmt_found || !data_found){
+        char id[4];
+        if(fread(id, 1, 4, fp) != 4) break;
+        uint32_t size = read_u32_le(fp);
 
-        if (id[0]=='f' && id[1]=='m' && id[2]=='t' && id[3]==' ') {
-            audioFormat  = read_u16_le(fp);
-            numChannels  = read_u16_le(fp);
-            sampleRate   = read_u32_le(fp);
-            (void)read_u32_le(fp); // byteRate
-            (void)read_u16_le(fp); // blockAlign
-            bitsPerSample = read_u16_le(fp);
+        if(memcmp(id, "fmt ", 4) == 0){
+            if(size < 16){ fclose(fp); return 0; }
+            audio_format = read_u16_le(fp);
+            out->num_channels = read_u16_le(fp);
+            out->sample_rate = read_u32_le(fp);
+            (void)read_u32_le(fp);
+            (void)read_u16_le(fp);
+            out->bits_per_sample = read_u16_le(fp);
 
-            // skip rest of fmt if any
-            uint32_t remain = (chunkSize > 16) ? (chunkSize - 16) : 0;
-            if (remain) fseek(fp, (long)remain, SEEK_CUR);
+            uint32_t remain = size - 16;
+            if(remain > 0) fseek(fp, (long)remain, SEEK_CUR);
 
-        } else if (id[0]=='d' && id[1]=='a' && id[2]=='t' && id[3]=='a') {
-            dataPos = ftell(fp);
-            dataSize = chunkSize;
-            fseek(fp, (long)chunkSize, SEEK_CUR);
-
-        } else {
-            // skip unknown chunk (pad to even)
-            fseek(fp, (long)chunkSize, SEEK_CUR);
+            fmt_found = 1;
+        }else if(memcmp(id, "data", 4) == 0){
+            data_pos = ftell(fp);
+            data_size = size;
+            fseek(fp, (long)size, SEEK_CUR);
+            data_found = 1;
+        }else{
+            fseek(fp, (long)size, SEEK_CUR);
         }
 
-        if (chunkSize & 1) fseek(fp, 1, SEEK_CUR); // padding
+        if(size & 1) fseek(fp, 1, SEEK_CUR); // padding
     }
 
-    if (audioFormat != 1) {
-        fprintf(stderr, "ERROR: only PCM supported (audioFormat=%u)\n", audioFormat);
-        fclose(fp);
-        return -1;
-    }
-    if (!(numChannels == 1 || numChannels == 2)) {
-        fprintf(stderr, "ERROR: only mono/stereo supported (channels=%u)\n", numChannels);
-        fclose(fp);
-        return -1;
-    }
-    if (bitsPerSample != 16) {
-        fprintf(stderr, "ERROR: only 16-bit supported (bits=%u)\n", bitsPerSample);
-        fclose(fp);
-        return -1;
-    }
-    if (dataPos < 0 || dataSize == 0) {
-        fprintf(stderr, "ERROR: missing data chunk\n");
-        fclose(fp);
-        return -1;
-    }
+    if(!fmt_found || !data_found){ fclose(fp); return 0; }
+    if(audio_format != 1 || out->bits_per_sample != 16){ fclose(fp); return 0; }
+    if(out->num_channels < 1){ fclose(fp); return 0; }
 
-    // number of mono samples after downmix
-    const int bytesPerSample = 2;
-    int totalFrames = (int)(dataSize / (numChannels * bytesPerSample)); // frames = samples per channel
-    int16_t *mono = (int16_t*)malloc((size_t)totalFrames * sizeof(int16_t));
-    if (!mono) {
-        fprintf(stderr, "ERROR: malloc failed\n");
-        fclose(fp);
-        return -1;
-    }
+    fseek(fp, data_pos, SEEK_SET);
 
-    // read data and downmix
-    fseek(fp, dataPos, SEEK_SET);
+    int bytes_per_sample = out->bits_per_sample / 8;
+    int total_frames = (int)(data_size / (bytes_per_sample * out->num_channels));
 
-    for (int i = 0; i < totalFrames; i++) {
-        int16_t s0 = 0, s1 = 0;
-        if (fread(&s0, sizeof(int16_t), 1, fp) != 1) { free(mono); fclose(fp); return -1; }
-        if (numChannels == 2) {
-            if (fread(&s1, sizeof(int16_t), 1, fp) != 1) { free(mono); fclose(fp); return -1; }
+    out->num_samples = total_frames;
+    out->pcm = (int16_t*)malloc(sizeof(int16_t) * (size_t)total_frames);
+    if(!out->pcm){ fclose(fp); return 0; }
 
-            // average with 32-bit accumulator to avoid overflow
-            int32_t sum = (int32_t)s0 + (int32_t)s1;
-            mono[i] = (int16_t)(sum / 2);
-        } else {
-            mono[i] = s0;
+    for(int i = 0; i < total_frames; i++){
+        int16_t s0;
+        if(fread(&s0, sizeof(int16_t), 1, fp) != 1){
+            free(out->pcm); fclose(fp); return 0;
+        }
+        out->pcm[i] = s0;
+
+        for(int ch = 1; ch < out->num_channels; ch++){
+            int16_t tmp;
+            if(fread(&tmp, sizeof(int16_t), 1, fp) != 1){
+                free(out->pcm); fclose(fp); return 0;
+            }
         }
     }
 
     fclose(fp);
-
-    out->sample_rate = (int)sampleRate;
-    out->num_samples = totalFrames;
-    out->pcm = mono;
-    return 0;
+    return 1;
 }
 
 //ms to sample
@@ -226,8 +194,17 @@ static void build_window(double *w, int P, const char *type){
         for(int n = 0; n < P; n++) w[n] = 1.0;
     }
     else if(strcmp(type, "hamming") == 0){
-        for(int n = 0; n < P; n++)
-            w[n] = 0.54 - 0.46 * cos(2.0 * M_PI * n / (P - 1));
+        //Avoid division by zero when P <= 1
+        if(P <= 1){
+            for(int n = 0; n < P; n++) w[n] = 1.0;
+        }else{
+            for(int n = 0; n < P; n++)
+                w[n] = 0.54 - 0.46 * cos(2.0 * M_PI * n / (P - 1));
+        }
+    }
+    else{
+        //Default: rectangular
+        for(int n = 0; n < P; n++) w[n] = 1.0;
     }
 }
 
@@ -260,15 +237,29 @@ int main(int argc, char** argv){
     }
     double *window = (double*)malloc(sizeof(double) * P);
     cpx *buf = (cpx*)malloc(sizeof(cpx) * N);
+    if(!window || !buf){
+        printf("Out of memory\n");
+        free(window);
+        free(buf);
+        free_wav(&wav);
+        return 1;
+    }
     build_window(window, P, w_type);
 
     FILE *fo = fopen(argv[6], "w");
+    if(!fo){
+        printf("Cannot open output file\n");
+        free(window);
+        free(buf);
+        free_wav(&wav);
+        return 1;
+    }
 
     for(int s = 0; s < wav.num_samples; s += M){
         for(int n = 0; n < N; n++){
             double x = 0.0;
-            if(s + n < wav.num_samples)
-                x = (wav.pcm[s + n] /32768.0) * window[n];
+            if(n < P && s + n < wav.num_samples)
+                x = (wav.pcm[s + n] / 32768.0) * window[n];
             buf[n].re = x;
             buf[n].im = 0.0;
         }
